@@ -162,6 +162,7 @@ batchcopy_cleanup() {
 }
 
 cmd_batchcopy() {
+	local min_count="${1:-1}"
 	local batch_count
 	local answer
 	local all_done
@@ -175,8 +176,8 @@ cmd_batchcopy() {
 		pids=()
 		batch_count="$(validated_usb_storage | wc -l)"
 
-		if (( ! batch_count )); then
-			die "No USB storage devices detected!\n"
+		if (( batch_count < min_count )); then
+			die "Detected %s USB storage devices. Need at least %s!\n" "$batch_count" "$min_count"
 		fi
 
 		msg "Detected %s USB storage device(s):\n" "${batch_count}"

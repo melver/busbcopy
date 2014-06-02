@@ -256,7 +256,7 @@ cmd_verify() {
 		bdev_checksum="${bdev_checksum##* }"
 
 		if [[ "$bdev_checksum" == "$img_checksum" ]]; then
-			printf "passed.\n"
+			printf "\e[0;32mpassed.\e[0m\n"
 		else
 			printf "\e[0;31mfailed!\e[0m\n"
 		fi

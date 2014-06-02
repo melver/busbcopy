@@ -73,6 +73,7 @@ type -p realpath &>/dev/null || die "No realpath!\n"
 type -p blockdev &>/dev/null || die "No blockdev!\n"
 type -p dd &>/dev/null       || die "No dd!\n"
 type -p rsync &>/dev/null    || die "No rsync!\n"
+type -p openssl &>/dev/null  || die "No openssl!\n"
 
 enumerate_usb_storage() {
 	find "/dev/disk/by-id/" -name "usb-*" |
@@ -164,6 +165,7 @@ cmd_batchcopy() {
 	local batch_count
 	local answer
 	local all_done
+	local bdev
 
 	msg "Batch copy mode starting ...\n"
 	trap 'batchcopy_cleanup' EXIT
@@ -178,7 +180,7 @@ cmd_batchcopy() {
 		fi
 
 		msg "Detected %s USB storage device(s):\n" "${batch_count}"
-		printf "\e[0;35m"
+		printf "\e[1;33m"
 		validated_usb_storage |
 		while read line; do
 			printf "${sep:-}%s" "$line"
@@ -222,7 +224,43 @@ cmd_batchcopy() {
 		msg "Please insert next batch of USB storage devices.\n"
 		read -rp "Press ENTER to confirm..." answer
 	done
+}
 
+cmd_verify() {
+	if [[ ! -r "$arg_source" ]]; then
+		die "Need source image to verify against!\n"
+	fi
+
+	local img_checksum="$(openssl dgst -md5 < "$arg_source")"
+	img_checksum="${img_checksum##* }"
+
+	msg "Image checksum (MD5): %s\n" "$img_checksum"
+
+	local img_bytes="$(stat -c "%s" "$arg_source")"
+	local img_blocks
+	local img_bs
+	if (( img_bytes % 512 == 0 )); then
+		img_blocks=$(( img_bytes / 512 ))
+		img_bs=512
+	else
+		img_blocks=$img_bytes
+		img_bs=1
+	fi
+
+	local bdev
+	local bdev_checksum
+	while read bdev; do
+		msg "Verifying %s ... " "$bdev"
+
+		bdev_checksum="$(dd if="$bdev" bs=$img_bs count=$img_blocks 2>/dev/null | openssl dgst -md5)"
+		bdev_checksum="${bdev_checksum##* }"
+
+		if [[ "$bdev_checksum" == "$img_checksum" ]]; then
+			printf "passed.\n"
+		else
+			printf "\e[0;31mfailed!\e[0m\n"
+		fi
+	done < <(validated_usb_storage)
 }
 
 ##
@@ -235,6 +273,7 @@ Usage: %s [<options>] <command> [<args>]
 Commands available:
     enum       Enumerate all valid USB storage devices.
     copy       Copy to a single target.
+    verify     Verify all attached USB storage devices against source image.
     batchcopy  Batch copy to all USB storage devices attached to this system.
 
 Options:
@@ -265,6 +304,7 @@ shift || :
 case "${cmd}" in
 	enum) validated_usb_storage "$@"     ;;
 	copy) cmd_copy "$@"                  ;;
+	verify) cmd_verify "$@"              ;;
 	batchcopy) cmd_batchcopy "$@"        ;;
 	*) prog_usage                        ;;
 esac

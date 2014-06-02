@@ -39,6 +39,7 @@ PROGNAME="${0##*/}"
 
 # Any device larger than this (in MiB), we don't consider.
 SAFETY_CUTOFF=10240
+DD_MAX_RETRY=3
 
 readonly PROGNAME SAFETY_CUTOFF
 
@@ -54,6 +55,10 @@ die() {
 
 msg() {
 	printf -- "\e[1;32mINFO:\e[0m ""$@"
+}
+
+warn() {
+	printf -- "\e[1;33mWARN:\e[0m ""$@"
 }
 
 trap_ERR() {
@@ -99,6 +104,44 @@ validated_usb_storage() {
 	done
 }
 
+# We only implement verification from image.
+verify_init_checksum() {
+	if [[ ! -f "$arg_source" ]]; then
+		die "Need source image to verify against!\n"
+	fi
+
+	[[ -n "${img_checksum:-}" ]] && return 0 || :
+
+	img_checksum="$(openssl dgst -md5 < "$arg_source")"
+	img_checksum="${img_checksum##* }"
+
+	msg "Image checksum (MD5): %s\n" "$img_checksum"
+
+	local img_bytes="$(stat -c "%s" "$arg_source")"
+
+	if (( img_bytes % 512 == 0 )); then
+		img_blocks=$(( img_bytes / 512 ))
+		img_bs=512
+	else
+		img_blocks=$img_bytes
+		img_bs=1
+	fi
+}
+
+verify_blockdev() {
+	local bdev="$1"
+	local bdev_checksum
+
+	bdev_checksum="$(dd if="$bdev" bs=$img_bs count=$img_blocks 2>/dev/null | openssl dgst -md5)"
+	bdev_checksum="${bdev_checksum##* }"
+
+	if [[ "$bdev_checksum" == "$img_checksum" ]]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
 copy_from_image() {
 	local bdev="$1"
 
@@ -106,7 +149,22 @@ copy_from_image() {
 		die "Cannot read image %s!\n" "$arg_source"
 	fi
 
-	dd if="$arg_source" of="$bdev" > /dev/null
+	local try_count=0
+	while (( try_count++ < DD_MAX_RETRY )); do
+		dd if="$arg_source" of="$bdev" &>/dev/null
+
+		if (( arg_verify )); then
+			if verify_blockdev "$bdev"; then
+				return 0
+			else
+				warn "Verification failed. Retrying %s ...\n" "$bdev"
+			fi
+		else
+			return 0
+		fi
+	done
+
+	die "Copying to %s failed!\n" "$bdev"
 }
 
 # If we copy from files, we assume that the target is already partitioned and
@@ -144,6 +202,8 @@ cmd_copy() {
 		die "Please specify source!\n"
 	fi
 
+	(( arg_verify )) && verify_init_checksum || :
+
 	msg "Copying to %s ...\n" "$bdev"
 
 	if [[ -d "$arg_source" ]]; then
@@ -152,7 +212,24 @@ cmd_copy() {
 		copy_from_image "$bdev"
 	fi
 
-	msg "Copying to %s complete.\n" "$bdev"
+	if (( arg_verify )); then
+		msg "Verified copy to %s successful.\n" "$bdev"
+	else
+		msg "Copying to %s successful.\n" "$bdev"
+	fi
+}
+
+cmd_verify() {
+	verify_init_checksum
+
+	while read bdev; do
+		msg "Verifying %s ... " "$bdev"
+		if verify_blockdev "$bdev"; then
+			printf "\e[0;32mpassed.\e[0m\n"
+		else
+			printf "\e[0;31mfailed!\e[0m\n"
+		fi
+	done < <(validated_usb_storage)
 }
 
 batchcopy_cleanup() {
@@ -171,6 +248,10 @@ cmd_batchcopy() {
 	msg "Batch copy mode starting ...\n"
 	trap 'batchcopy_cleanup' EXIT
 	trap 'msg "User aborted!\n"; exit 42' INT
+
+	# Because cmd_copy is called in a subshell, if we copy from image,
+	# initialize checksum, so we only do it once.
+	(( arg_verify )) && verify_init_checksum || :
 
 	while :; do
 		pids=()
@@ -227,43 +308,6 @@ cmd_batchcopy() {
 	done
 }
 
-cmd_verify() {
-	if [[ ! -r "$arg_source" ]]; then
-		die "Need source image to verify against!\n"
-	fi
-
-	local img_checksum="$(openssl dgst -md5 < "$arg_source")"
-	img_checksum="${img_checksum##* }"
-
-	msg "Image checksum (MD5): %s\n" "$img_checksum"
-
-	local img_bytes="$(stat -c "%s" "$arg_source")"
-	local img_blocks
-	local img_bs
-	if (( img_bytes % 512 == 0 )); then
-		img_blocks=$(( img_bytes / 512 ))
-		img_bs=512
-	else
-		img_blocks=$img_bytes
-		img_bs=1
-	fi
-
-	local bdev
-	local bdev_checksum
-	while read bdev; do
-		msg "Verifying %s ... " "$bdev"
-
-		bdev_checksum="$(dd if="$bdev" bs=$img_bs count=$img_blocks 2>/dev/null | openssl dgst -md5)"
-		bdev_checksum="${bdev_checksum##* }"
-
-		if [[ "$bdev_checksum" == "$img_checksum" ]]; then
-			printf "\e[0;32mpassed.\e[0m\n"
-		else
-			printf "\e[0;31mfailed!\e[0m\n"
-		fi
-	done < <(validated_usb_storage)
-}
-
 ##
 # PARSE OPTIONS
 #
@@ -280,11 +324,14 @@ Commands available:
 Options:
     --source
         Source image or directory with files to copy to targets.
+    --verify
+        When copying an image, automatically verify
 " "$PROGNAME"
 	exit 42
 }
 
 arg_source=
+arg_verify=0
 
 while :; do
 	case "${1:-}" in
@@ -292,6 +339,9 @@ while :; do
 			[[ -n "${2:-}" ]] || prog_usage
 			arg_source="$2"
 			shift
+			;;
+		--verify)
+			arg_verify=1
 			;;
 		-*) prog_usage ;;
 		*) break;;

@@ -79,6 +79,7 @@ type -p blockdev &>/dev/null || die "No blockdev!\n"
 type -p dd &>/dev/null       || die "No dd!\n"
 type -p rsync &>/dev/null    || die "No rsync!\n"
 type -p openssl &>/dev/null  || die "No openssl!\n"
+type -p eject &>/dev/null    || die "No eject!\n"
 
 enumerate_usb_storage() {
 	find "/dev/disk/by-id/" -name "usb-*" |
@@ -217,6 +218,10 @@ cmd_copy() {
 	else
 		msg "Copying to %s successful.\n" "$bdev"
 	fi
+
+	if (( arg_eject )); then
+		eject "$bdev"
+	fi
 }
 
 cmd_verify() {
@@ -297,11 +302,13 @@ cmd_batchcopy() {
 		sync
 		msg "Finish time: %s\n" "$(date)"
 
-		msg "Please remove all USB storage devices ... "
-		while (( $(validated_usb_storage | wc -l) )); do
-			sleep 1
-		done
-		printf -- "done.\n"
+		if (( ! arg_eject )); then
+			msg "Please remove all USB storage devices ... "
+			while (( $(validated_usb_storage | wc -l) )); do
+				sleep 1
+			done
+			printf -- "done.\n"
+		fi
 
 		msg "Please insert next batch of USB storage devices.\n"
 		read -rp "Press ENTER to confirm..." answer
@@ -325,13 +332,16 @@ Options:
     --source
         Source image or directory with files to copy to targets.
     --verify
-        When copying an image, automatically verify
+        When copying an image, automatically verify.
+    --eject
+        Use 'eject' when done with copying.
 " "$PROGNAME"
 	exit 42
 }
 
 arg_source=
 arg_verify=0
+arg_eject=0
 
 while :; do
 	case "${1:-}" in
@@ -342,6 +352,9 @@ while :; do
 			;;
 		--verify)
 			arg_verify=1
+			;;
+		--eject)
+			arg_eject=1
 			;;
 		-*) prog_usage ;;
 		*) break;;

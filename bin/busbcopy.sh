@@ -84,9 +84,7 @@ type -p eject &>/dev/null    || die "No eject!\n"
 enumerate_usb_storage() {
 	find "/dev/disk/by-id/" -name "usb-*" |
 	while read line; do
-		if [[ "$(realpath $line)" =~ ^/dev/sd[a-z]$ ]]; then
-			realpath "$line"
-		fi
+		realpath "$line"
 	done
 }
 
